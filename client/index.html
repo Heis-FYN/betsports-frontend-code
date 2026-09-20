@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <meta name="betsports-api" content="https://betsports-backend.onrender.com" />
     <meta charset="UTF-8" />
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate, max-age=0" />
     <meta http-equiv="Pragma" content="no-cache" />
@@ -54,6 +55,11 @@
     </script>
     <script type="module" crossorigin src="/assets/index-D19ItbwF.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-DpwkVVc8.css">
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(console.error));
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
