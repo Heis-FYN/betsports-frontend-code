@@ -5,5 +5,5 @@ export default function Home() {
     window.location.replace("/legacy.html");
   }, []);
 
-  return <div className="min-h-screen bg-black" aria-label="Loading BetSports" />;
+  return <div className="min-h-screen bg-black" aria-label="Loading MaxWin" />;
 }
