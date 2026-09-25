@@ -1,6 +1,7 @@
 [build]
   command = "pnpm run build"
   publish = "dist/public"
+# Production static bundle for maxxwin.netlify.app.
 
 [build.environment]
   NODE_VERSION = "22"
