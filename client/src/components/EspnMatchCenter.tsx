@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, CalendarDays, ChevronRight, CircleAlert, Clock3, RefreshCw, Trophy } from "lucide-react";
 
 type SportKey = "nfl" | "nba" | "mlb" | "nhl" | "epl";
@@ -84,9 +84,12 @@ export default function EspnMatchCenter() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [loadedSportId, setLoadedSportId] = useState<SportKey | null>(null);
+  const requestSequence = useRef(0);
   const sport = SPORTS.find((item) => item.id === sportId) ?? SPORTS[0];
 
   const loadMatches = useCallback(async (key: SportKey) => {
+    const requestId = ++requestSequence.current;
     const selectedSport = SPORTS.find((item) => item.id === key) ?? SPORTS[0];
     setLoading(true);
     setError("");
@@ -97,12 +100,24 @@ export default function EspnMatchCenter() {
         day.setUTCDate(day.getUTCDate() + offset);
         return `${day.getUTCFullYear()}${String(day.getUTCMonth() + 1).padStart(2, "0")}${String(day.getUTCDate()).padStart(2, "0")}`;
       });
-      const responses = await Promise.all(
-        dayKeys.map((date) => fetch(`${ESPN_ROOT}/${selectedSport.path}/scoreboard?dates=${date}`, { cache: "no-store" })),
+      const requests = await Promise.allSettled(
+        dayKeys.map(async (date) => {
+          const response = await fetch(`${ESPN_ROOT}/${selectedSport.path}/scoreboard?dates=${date}`, {
+            cache: "no-store",
+            signal: AbortSignal.timeout(10000),
+          });
+          if (!response.ok) throw new Error(`ESPN returned ${response.status} for ${date}.`);
+          return (await response.json()) as EspnScoreboard;
+        }),
       );
-      const failedResponse = responses.find((response) => !response.ok);
-      if (failedResponse) throw new Error(`ESPN returned ${failedResponse.status}. Please retry in a moment.`);
-      const feeds = (await Promise.all(responses.map((response) => response.json()))) as EspnScoreboard[];
+      if (requestId !== requestSequence.current) return;
+      const feeds = requests.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+      if (feeds.length === 0) {
+        const firstFailure = requests.find((result) => result.status === "rejected");
+        throw firstFailure?.status === "rejected" && firstFailure.reason instanceof Error
+          ? firstFailure.reason
+          : new Error("ESPN could not return match data. Please retry in a moment.");
+      }
       const scoreboardEvents = Array.from(new Map(feeds.flatMap((feed) => feed.events ?? []).map((event) => [event.id, event])).values());
       const now = Date.now();
       const weekAhead = now + 7 * 24 * 60 * 60 * 1000;
@@ -113,18 +128,26 @@ export default function EspnMatchCenter() {
           return state === "in" || (state !== "post" && Number.isFinite(start) && start <= weekAhead && start >= now - 2 * 60 * 60 * 1000);
         })
         .sort((left, right) => new Date(left.date ?? 0).getTime() - new Date(right.date ?? 0).getTime());
+      if (requestId !== requestSequence.current) return;
       setEvents(visibleEvents);
+      setLoadedSportId(key);
       setLastUpdated(new Date());
+      const failedCount = requests.length - feeds.length;
+      setError(failedCount > 0 ? `ESPN could not return ${failedCount} date${failedCount === 1 ? "" : "s"}; showing the matches that loaded.` : "");
     } catch (cause) {
-      setEvents([]);
-      setError(cause instanceof Error ? cause.message : "Matches could not be loaded. Please try again.");
+      if (requestId === requestSequence.current) {
+        setError(cause instanceof Error ? cause.message : "Matches could not be loaded. Please try again.");
+      }
     } finally {
-      setLoading(false);
+      if (requestId === requestSequence.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void loadMatches(sportId);
+    return () => {
+      requestSequence.current += 1;
+    };
   }, [loadMatches, sportId]);
 
   useEffect(() => {
@@ -132,10 +155,8 @@ export default function EspnMatchCenter() {
     return () => window.clearInterval(refreshTimer);
   }, [loadMatches, sportId]);
 
-  const upcomingCount = useMemo(
-    () => events.filter((event) => event.status?.type?.state?.toLowerCase() !== "in").length,
-    [events],
-  );
+  const visibleEvents = loadedSportId === sportId ? events : [];
+  const upcomingCount = visibleEvents.filter((event) => event.status?.type?.state?.toLowerCase() !== "in").length;
 
   return (
     <main className="min-h-screen bg-[#080a09] text-white">
@@ -190,20 +211,22 @@ export default function EspnMatchCenter() {
         <div className="mb-4 flex items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-extrabold sm:text-2xl">{sport.label}</h2>
-            <p className="mt-1 text-xs text-white/45">{events.length} match{events.length === 1 ? "" : "es"} in the next 7 days{events.some((event) => event.status?.type?.state === "in") ? " · Live now" : ""}</p>
+            <p className="mt-1 text-xs text-white/45">{visibleEvents.length} match{visibleEvents.length === 1 ? "" : "es"} in the next 7 days{visibleEvents.some((event) => event.status?.type?.state === "in") ? " · Live now" : ""}</p>
           </div>
           <span className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-semibold text-white/55"><CalendarDays size={14} /> Upcoming: {upcomingCount}</span>
         </div>
 
-        {loading ? (
+        {loading && visibleEvents.length === 0 ? (
           <div className="grid min-h-56 place-items-center rounded-2xl border border-white/10 bg-[#101311] text-sm font-semibold text-white/55" role="status"><span className="inline-flex items-center gap-3"><RefreshCw size={18} className="animate-spin text-[#f5c542]" />Loading {sport.league} matches…</span></div>
-        ) : error ? (
+        ) : visibleEvents.length === 0 && error ? (
           <div className="flex min-h-48 flex-col items-center justify-center gap-3 rounded-2xl border border-red-400/20 bg-red-400/[0.06] px-5 text-center" role="alert"><CircleAlert size={24} className="text-red-300" /><p className="font-bold">The scoreboard is temporarily unavailable</p><p className="max-w-lg text-sm text-white/60">{error}</p><button type="button" onClick={() => void loadMatches(sportId)} className="mt-1 rounded-lg bg-white/10 px-4 py-2 text-sm font-bold hover:bg-white/15">Try again</button></div>
-        ) : events.length === 0 ? (
+        ) : visibleEvents.length === 0 ? (
           <div className="grid min-h-56 place-items-center rounded-2xl border border-white/10 bg-[#101311] px-5 text-center"><div><Trophy size={28} className="mx-auto text-[#f5c542]" /><p className="mt-3 font-bold">No {sport.league} games in the next 7 days</p><p className="mt-1 text-sm text-white/50">Choose another league or check back later. The list updates from ESPN.</p></div></div>
         ) : (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {events.map((event) => {
+          <div>
+            {error && <p className="mb-3 rounded-lg border border-[#f5c542]/20 bg-[#f5c542]/[0.06] px-4 py-2 text-xs text-[#f5c542]/90" role="status">{error}</p>}
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {visibleEvents.map((event) => {
               const { home, away } = eventTeams(event);
               const status = getStatus(event);
               const live = status.tone === "live";
@@ -230,6 +253,7 @@ export default function EspnMatchCenter() {
                 </article>
               );
             })}
+            </div>
           </div>
         )}
 
